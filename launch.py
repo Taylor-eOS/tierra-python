@@ -12,6 +12,8 @@ OP_SUB = 2
 OP_MUL = 3
 OP_DIV = 4
 MAX_OP = 254
+P_INSERT = 0.002
+P_DELETE = 0.002
 
 def wrap(index):
     return index % MEMORY_SIZE
@@ -25,10 +27,18 @@ def find_empty_region(length):
             return wrap(base)
     return None
 
-def mutate_instruction(instr):
-    if random.random() < P_MUTATE:
-        return random.randint(0, MAX_OP)
-    return instr
+def mutate_genome(genome):
+    new = []
+    for instr in genome:
+        if random.random() < P_DELETE:
+            continue
+        if random.random() < P_INSERT:
+            new.append(random.randint(0, MAX_OP))
+        if random.random() < P_MUTATE:
+            new.append(random.randint(0, MAX_OP))
+        else:
+            new.append(instr)
+    return new
 
 def do_copy(ip):
     reg = registers[ip]
@@ -37,14 +47,22 @@ def do_copy(ip):
     start = reg['start']
     end = reg['end']
     length = (end - start + MEMORY_SIZE) % MEMORY_SIZE + 1
-    target = find_empty_region(length)
-    if target is None:
-        return
-    for k in range(length):
-        src = wrap(start + k)
-        dst = wrap(target + k)
-        memory[dst] = mutate_instruction(memory[src])
-    registers[target] = {'start': target, 'end': wrap(target + length - 1)}
+    genome = [memory[wrap(start + k)] for k in range(length)]
+    new_genome = mutate_genome(genome)
+    target = random.randint(0, MEMORY_SIZE - 1)
+    overlapped = []
+    for rid, r2 in registers.items():
+        if 'start' in r2 and 'end' in r2:
+            s2 = r2['start']
+            l2 = (r2['end'] - s2 + MEMORY_SIZE) % MEMORY_SIZE + 1
+            positions = {wrap(s2 + i) for i in range(l2)}
+            if any(wrap(target + i) in positions for i in range(len(new_genome))):
+                overlapped.append(rid)
+    for rid in overlapped:
+        del registers[rid]
+    for k, instr in enumerate(new_genome):
+        memory[wrap(target + k)] = instr
+    registers[target] = {'start': target, 'end': wrap(target + len(new_genome) - 1)}
 
 def step(ip):
     op = memory[ip]
@@ -71,22 +89,47 @@ def step(ip):
         elif op == OP_DIV and b != 0:
             reg['acc'] = a // b
 
-def run_simulation(ticks):
+def extract_genome(start, end):
+    length = (end - start + MEMORY_SIZE) % MEMORY_SIZE + 1
+    return tuple(memory[wrap(start + k)] for k in range(length))
+
+def run_simulation(ticks, report_interval=1000):
     for tick in range(ticks):
         for ip in range(MEMORY_SIZE):
             step(ip)
-        if tick % 1000 == 0:
-            alive = sum(1 for r in registers.values() if 'start' in r and 'end' in r)
-            print(f"tick {tick}: alive organisms {alive}")
+        if tick % report_interval == 0:
+            genomes = []
+            for reg in registers.values():
+                if 'start' in reg and 'end' in reg:
+                    genomes.append(extract_genome(reg['start'], reg['end']))
+            if genomes:
+                unique = len({g for g in genomes})
+                lengths = [len(g) for g in genomes]
+                avg_len = sum(lengths) / len(lengths)
+                min_len = min(lengths)
+                max_len = max(lengths)
+                print(f"tick {tick}: population {len(genomes)}, distinct {unique}, length min {min_len}, avg {avg_len:.1f}, max {max_len}")
+            else:
+                print(f"tick {tick}: no organisms remain")
 
 if __name__ == '__main__':
     memory = [OP_NOP for _ in range(MEMORY_SIZE)]
     registers = {}
-    base = random.randint(0, MEMORY_SIZE - 3)
-    memory[wrap(base    )] = OP_MARK_START
-    memory[wrap(base + 1)] = OP_MARK_END
-    memory[wrap(base + 2)] = OP_COPY
-    registers[wrap(base    )] = {'start': wrap(base    )}
-    registers[wrap(base + 1)] = {'end': wrap(base + 1)}
-    run_simulation(50000)
+    base = random.randint(0, MEMORY_SIZE - 7)
+    start = wrap(base)
+    a1    = wrap(base + 1)
+    a2    = wrap(base + 2)
+    a3    = wrap(base + 3)
+    a4    = wrap(base + 4)
+    end   = wrap(base + 5)
+    copy  = wrap(base + 6)
+    memory[start] = OP_MARK_START
+    memory[a1]    = OP_ADD
+    memory[a2]    = OP_MUL
+    memory[a3]    = OP_SUB
+    memory[a4]    = OP_DIV
+    memory[end]   = OP_MARK_END
+    memory[copy]  = OP_COPY
+    registers[copy] = {'start': start, 'end': end}
+    run_simulation(50000, report_interval=500)
 
