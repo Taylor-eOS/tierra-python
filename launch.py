@@ -1,19 +1,40 @@
 import random
 
 MEMORY_SIZE = 2048
+ENV_SIZE = 2048
 P_MUTATE = 0.005
+P_INSERT = 0.002
+P_DELETE = 0.002
 OP_NOP = 0
 OP_MARK_START = 250
 OP_MARK_END = 251
 OP_COPY = 252
 OP_FIND_EMPTY = 253
+OP_SENSE = 254
+OP_HARVEST = 255
 OP_ADD = 1
 OP_SUB = 2
 OP_MUL = 3
 OP_DIV = 4
-MAX_OP = 254
-P_INSERT = 0.002
-P_DELETE = 0.002
+MAX_OP = OP_HARVEST
+DEATH_THRESHOLD = 0.5
+
+def initialize():
+    global memory, registers, environment
+    memory = [OP_NOP]*MEMORY_SIZE
+    registers = {}
+    environment = [random.random() for _ in range(ENV_SIZE)]
+    for _ in range(ENV_SIZE//10):
+        i = random.randrange(ENV_SIZE)
+        environment[i] += random.uniform(1,5)
+
+def diffuse():
+    new_env = [0.0]*ENV_SIZE
+    for i, r in enumerate(environment):
+        left, right = environment[(i-1)%ENV_SIZE], environment[(i+1)%ENV_SIZE]
+        new_env[i] = r*0.8 + (left+right)*0.1
+    for i in range(ENV_SIZE):
+        environment[i] = new_env[i]
 
 def wrap(index):
     return index % MEMORY_SIZE
@@ -49,68 +70,76 @@ def do_copy(ip):
     length = (end - start + MEMORY_SIZE) % MEMORY_SIZE + 1
     genome = [memory[wrap(start + k)] for k in range(length)]
     new_genome = mutate_genome(genome)
-    target = random.randint(0, MEMORY_SIZE - 1)
-    overlapped = []
-    for rid, r2 in registers.items():
-        if 'start' in r2 and 'end' in r2:
-            s2 = r2['start']
-            l2 = (r2['end'] - s2 + MEMORY_SIZE) % MEMORY_SIZE + 1
-            positions = {wrap(s2 + i) for i in range(l2)}
-            if any(wrap(target + i) in positions for i in range(len(new_genome))):
-                overlapped.append(rid)
-    for rid in overlapped:
-        del registers[rid]
+    length = len(new_genome)
+    target = random.randrange(MEMORY_SIZE)
+    parent_acc = reg.get('acc', 0)
+    new_acc = parent_acc // 2
+    reg['acc'] = parent_acc - new_acc
+    occ = registers.get(target)
+    occ_acc = occ.get('acc', 0) if occ and 'start' in occ and occ['start'] == target else 0
+    if occ_acc and new_acc <= occ_acc:
+        return
+    if occ_acc:
+        old_start = occ['start']
+        old_end = occ['end']
+        for k in range((old_end - old_start) % MEMORY_SIZE + 1):
+            memory[wrap(old_start + k)] = OP_NOP
+        del registers[target]
     for k, instr in enumerate(new_genome):
         memory[wrap(target + k)] = instr
-    registers[target] = {'start': target, 'end': wrap(target + len(new_genome) - 1)}
+    registers[target] = {'start': target, 'end': wrap(target + length - 1), 'acc': new_acc}
 
 def step(ip):
     op = memory[ip]
-    reg = registers.setdefault(ip, {})
-    if op == OP_MARK_START:
-        reg['start'] = ip
-    elif op == OP_MARK_END:
-        reg['end'] = ip
-    elif op == OP_COPY:
+    reg = registers.setdefault(ip,{})
+    if op==OP_MARK_START:
+        reg['start']=ip
+    elif op==OP_MARK_END:
+        reg['end']=ip
+    elif op==OP_COPY:
         do_copy(ip)
-    elif op == OP_FIND_EMPTY:
-        if 'start' in reg and 'end' in reg:
-            length = (reg['end'] - reg['start'] + MEMORY_SIZE) % MEMORY_SIZE + 1
-            reg['empty'] = find_empty_region(length)
-    elif op in (OP_ADD, OP_SUB, OP_MUL, OP_DIV):
-        a = reg.get('acc', 0)
-        b = reg.get('val', 1)
-        if op == OP_ADD:
-            reg['acc'] = a + b
-        elif op == OP_SUB:
-            reg['acc'] = a - b
-        elif op == OP_MUL:
-            reg['acc'] = a * b
-        elif op == OP_DIV and b != 0:
-            reg['acc'] = a // b
+    elif op==OP_FIND_EMPTY:
+        if 'start'in reg and 'end'in reg:
+            length=(reg['end']-reg['start'])%MEMORY_SIZE+1
+            pos=find_empty_region(length)
+            if pos is not None: reg['empty']=pos
+    elif op==OP_SENSE:
+        reg['val']=environment[ip%ENV_SIZE]
+    elif op==OP_HARVEST:
+        amt=min(environment[ip%ENV_SIZE],1.0)
+        environment[ip%ENV_SIZE]-=amt
+        reg['acc']=reg.get('acc',0)+amt
+    else:
+        a=reg.get('acc',0)
+        b=reg.get('val',1)
+        if op==1: reg['acc']=a+b
+        elif op==2: reg['acc']=a-b
+        elif op==3: reg['acc']=a*b
+        elif op==4 and b: reg['acc']=a//b
 
 def extract_genome(start, end):
     length = (end - start + MEMORY_SIZE) % MEMORY_SIZE + 1
     return tuple(memory[wrap(start + k)] for k in range(length))
 
 def run_simulation(ticks, report_interval=1000):
-    for tick in range(ticks):
+    initialize()
+    base = random.randrange(0, MEMORY_SIZE-7)
+    start, end = base, base+5
+    ops = [OP_MARK_START, OP_SENSE, OP_HARVEST, OP_SENSE, OP_HARVEST, OP_MARK_END, OP_COPY]
+    for i, o in enumerate(ops):
+        memory[(base+i)%MEMORY_SIZE] = o
+    registers[(base+6)%MEMORY_SIZE] = {'start': start, 'end': end}
+    for t in range(ticks):
+        diffuse()
         for ip in range(MEMORY_SIZE):
             step(ip)
-        if tick % report_interval == 0:
-            genomes = []
-            for reg in registers.values():
-                if 'start' in reg and 'end' in reg:
-                    genomes.append(extract_genome(reg['start'], reg['end']))
-            if genomes:
-                unique = len({g for g in genomes})
-                lengths = [len(g) for g in genomes]
-                avg_len = sum(lengths) / len(lengths)
-                min_len = min(lengths)
-                max_len = max(lengths)
-                print(f"tick {tick}: population {len(genomes)}, distinct {unique}, length min {min_len}, avg {avg_len:.1f}, max {max_len}")
+        if t%report_interval == 0:
+            pop = [tuple(memory[(r['start']+k)%MEMORY_SIZE] for k in range((r['end']-r['start'])%MEMORY_SIZE+1))
+                   for r in registers.values() if 'start' in r and 'end' in r]
+            if pop:
+                print(f"tick {t}: pop {len(pop)}, distinct {len(set(pop))}")
             else:
-                print(f"tick {tick}: no organisms remain")
+                print(f"tick {t}: extinction")
 
 if __name__ == '__main__':
     memory = [OP_NOP for _ in range(MEMORY_SIZE)]
